@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Route Parser</title>
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
+    <style>
+        body { font-family: sans-serif; line-height: 1.6; padding: 20px; }
+        #statusArea {
+            margin-top: 15px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            background-color: #f8f8f8;
+            white-space: pre-wrap; /* Preserve formatting */
+            word-wrap: break-word; /* Wrap long lines */
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        button { padding: 10px 15px; margin-left: 10px; cursor: pointer; }
+        #downloadLink { display: none; margin-top: 15px; }
+        label { font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <h1>Route File Parser</h1>
+    <p>Upload your route text file (.txt) to convert it to CSV format.</p>
+
+    <div>
+        <label for="inputFile">Choose File:</label>
+        <input type="file" id="inputFile" accept=".txt">
+        <button id="processButton" disabled>Process File</button>
+    </div>
+
+    <a id="downloadLink" download="output_routes.csv">Download Processed CSV File</a>
+
+    <div id="statusArea">Loading Pyodide and Python environment... Please wait.</div>
+
+    <script>
+        const fileInput = document.getElementById('inputFile');
+        const processButton = document.getElementById('processButton');
+        const downloadLink = document.getElementById('downloadLink');
+        const statusArea = document.getElementById('statusArea');
+        let pyodide = null;
+        let pythonScript = '';
+
+        // --- Helper function to update status ---
+        function updateStatus(message, isError = false) {
+            console.log(message); // Log to console as well
+            statusArea.textContent = message;
+            statusArea.style.color = isError ? 'red' : 'black';
+        }
+
+        // --- Main function to initialize Pyodide ---
+        async function initializePyodide() {
+            try {
+                pyodide = await loadPyodide();
+                updateStatus("Pyodide loaded. Fetching Python script...");
+
+                // Fetch the Python script
+                const response = await fetch('route_parser.py');
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                pythonScript = await response.text();
+                updateStatus("Python script loaded. Ready to process files.");
+                processButton.disabled = false; // Enable the button
+
+            } catch (error) {
+                updateStatus(`Error initializing Pyodide or fetching script: ${error}`, true);
+                console.error(error);
+            }
+        }
+
+        // --- Function to handle file processing ---
+        async function processFile() {
+            if (!fileInput.files || fileInput.files.length === 0) {
+                updateStatus("Please select a file first.", true);
+                return;
+            }
+            if (!pyodide || !pythonScript) {
+                 updateStatus("Pyodide or Python script not ready. Please wait or refresh.", true);
+                 return;
+            }
+
+            const file = fileInput.files[0];
+            updateStatus(`Reading file: ${file.name}...`);
+            downloadLink.style.display = 'none'; // Hide previous link
+            processButton.disabled = true; // Disable button during processing
+
+            const reader = new FileReader();
+
+            reader.onload = async (event) => {
+                const fileContent = event.target.result;
+                updateStatus("File read. Executing Python script...");
+
+                try {
+                    // Load the Python script into Pyodide's environment
+                    pyodide.runPython(pythonScript);
+
+                    // Get the processing function from Python
+                    const parseFunction = pyodide.globals.get('parse_route_content');
+
+                    // Call the Python function with the file content
+                    // Pyodide automatically converts the JS string to a Python string
+                    const result = await parseFunction(fileContent);
+
+                    // Result is a Pyodide Proxy - convert its parts to JS strings
+                    const outputCsv = result.get(0); // result[0] in Python
+                    const logMessages = result.get(1); // result[1] in Python
+                    result.destroy(); // Clean up the Pyodide proxy
+
+                    updateStatus(`Python script finished.\nLogs:\n------\n${logMessages}`);
+
+                    if (outputCsv && outputCsv.length > 0) {
+                        // Create a Blob from the CSV string
+                        const blob = new Blob([outputCsv], { type: 'text/csv;charset=utf-8;' });
+
+                        // Create a URL for the Blob
+                        const url = URL.createObjectURL(blob);
+
+                        // Set the download link properties
+                        downloadLink.href = url;
+                        downloadLink.style.display = 'block'; // Show the link
+                    } else {
+                         updateStatus(`Python script finished, but no CSV data was generated.\nLogs:\n------\n${logMessages}`, !logMessages.includes("Error")); // Show warning if no CSV
+                    }
+
+                } catch (error) {
+                    updateStatus(`Error executing Python script: ${error}`, true);
+                    console.error(error);
+                } finally {
+                     processButton.disabled = false; // Re-enable button
+                }
+            };
+
+            reader.onerror = (event) => {
+                updateStatus(`Error reading file: ${reader.error}`, true);
+                processButton.disabled = false; // Re-enable button
+            };
+
+            reader.readAsText(file); // Read the file as text
+        }
+
+        // --- Add event listener to the button ---
+        processButton.addEventListener('click', processFile);
+
+        // --- Start Pyodide initialization when the page loads ---
+        initializePyodide();
+
+    </script>
+
+</body>
+</html>
